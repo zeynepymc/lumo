@@ -1,4 +1,4 @@
-# 🪄 Lumos: The Hidden Chamber
+# Lumos: The Hidden Chamber
 
 **Lumos: The Hidden Chamber** is an interactive, first-person 3D WebGL experience developed for the **CENG376 – Computer Graphics** course at Gazi University. 
 
