@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lumos: The Hidden Chamber</title>
+
+  <script src="/src/common/webgl-utils.js"></script>
+  <script src="/src/common/initShaders.js"></script>
+  <script src="/src/common/MV.js"></script>
+
+  <script id="vertex-shader" type="x-shader/x-vertex">
+      precision mediump float; 
+
+      attribute vec4 vPosition;
+      attribute vec3 vNormal;
+      attribute vec2 vTexCoord;
+
+      uniform mat4 modelMatrix, viewMatrix, projectionMatrix;
+
+      varying vec3 fPosition;
+      varying vec3 fNormal;
+      varying vec2 fTexCoord; 
+      varying vec3 vLocalPos; // YENİ: Yüzüğe lokal oyma yapmak için kordinatlar
+
+      void main() {
+        vec4 worldPos = modelMatrix * vPosition;
+        fPosition = worldPos.xyz;
+        fNormal = normalize(mat3(modelMatrix) * vNormal);
+        fTexCoord = vTexCoord; 
+        vLocalPos = vPosition.xyz; // Matematiksel oymalar için objenin kendi merkezini yollar
+        gl_Position = projectionMatrix * viewMatrix * worldPos;
+      }
+  </script>
+
+<script id="fragment-shader" type="x-shader/x-fragment">
+    precision mediump float;
+    
+    uniform vec4 fColor;
+    uniform vec3 lightPosition, cameraPosition, lightColor, lightDirection;
+    uniform float lightIntensity, innerCutoff, outerCutoff, shininess, specularStrength;
+    
+    uniform int useLighting, uHasTexture, uHasBumpMap, uRenderMode, uSpellMode;
+    uniform int uIsMagic, uIsRing, uIsPalantir; // YENİ: Palantir eklendi!
+    uniform vec4 uPickingColor;
+    
+    uniform sampler2D uTexture;
+    uniform sampler2D uBumpMap; 
+    uniform float uTime;
+    
+    varying vec3 fPosition;
+    varying vec3 fNormal;
+    varying vec2 fTexCoord;
+    varying vec3 vLocalPos; 
+
+    // YÜZÜK İÇİN KOR ATEŞİNDEN RÜNLER
+    float getRune(float a, float y) {
+        float x = a * 35.0; 
+        float z = y * 60.0; 
+        float letterMask = smoothstep(0.1, 0.4, sin(x * 0.8)); 
+        float lines = abs(sin(x + cos(z * 1.5)) - cos(x * 0.6 + sin(z)));
+        float stroke = smoothstep(0.25, 0.05, lines); 
+        float bandMask = smoothstep(0.12, 0.04, abs(y));
+        return stroke * letterMask * bandMask;
+    }
+
+    void main() {
+      if (uRenderMode == 1) { gl_FragColor = uPickingColor; return; }
+      
+      vec4 texColor = (uHasTexture == 1) ? texture2D(uTexture, fTexCoord) : vec4(1.0);
+      vec4 baseColor;
+
+      if (uIsMagic == 1 && uHasTexture == 1) {
+          baseColor = vec4(texColor.rgb * fColor.rgb, texColor.a * fColor.a);
+      } else if (uHasTexture == 1) {
+          float gray = dot(texColor.rgb, vec3(0.299, 0.587, 0.114));
+          baseColor = vec4(gray * fColor.rgb * 2.2, texColor.a * fColor.a);
+      } else {
+          baseColor = fColor;
+      }
+
+      vec3 normal = normalize(fNormal);
+      
+      if (uHasBumpMap == 1) {
+          float offset = 0.005; 
+          float h0 = texture2D(uBumpMap, fTexCoord).r;
+          float hx = texture2D(uBumpMap, fTexCoord + vec2(offset, 0.0)).r;
+          float hy = texture2D(uBumpMap, fTexCoord + vec2(0.0, offset)).r;
+          float dx = (hx - h0) * 15.0; 
+          float dy = (hy - h0) * 15.0;
+          normal = normalize(normal - vec3(dx, dy, 0.0));
+      }
+
+      float runeGlow = 0.0;
+      if (uIsRing == 1) {
+          float angle = atan(vLocalPos.z, vLocalPos.x);
+          float y = vLocalPos.y;
+          runeGlow = getRune(angle, y);
+          baseColor = vec4(0.8, 0.6, 0.1, 1.0); 
+      }
+
+      // --- IŞIK HESAPLAMALARI ---
+      vec3 fromLight = fPosition - lightPosition;
+      vec3 toLight = normalize(-fromLight);
+      vec3 viewDir = normalize(cameraPosition - fPosition);
+      vec3 reflectDir = reflect(-toLight, normal); 
+      float dist = length(fromLight);
+      float att = 1.0 / (1.0 + 0.09 * dist + 0.018 * dist * dist);
+      float theta = dot(normalize(fromLight), normalize(lightDirection));
+      float cone = smoothstep(outerCutoff, innerCutoff, theta);
+      
+      if (useLighting == 0) { gl_FragColor = baseColor; return; }
+      
+      vec3 ambient = 0.022 * baseColor.rgb;
+      float diff = max(dot(normal, toLight), 0.0);
+      vec3 diffuse = (0.18 + 0.82 * diff) * baseColor.rgb * lightColor;
+      
+      float currentSpecStrength = specularStrength;
+      if (uIsRing == 1) { currentSpecStrength *= (1.0 - runeGlow); }
+      
+      float spec = pow(max(dot(viewDir, reflectDir), 0.0), shininess);
+      float incomingLight = att * lightIntensity * cone * cone;
+      vec3 final = ambient + incomingLight * (diffuse + currentSpecStrength * spec * lightColor);
+
+      // 1. YÜZÜK ATEŞİ
+      if (uIsRing == 1 && runeGlow > 0.0) {
+          float pulse = (sin(uTime * 3.0) * 0.5 + 0.5) * 0.5 + 0.6; 
+          vec3 fireColor = vec3(1.0, 0.3, 0.0) * pulse * 2.0; 
+          vec3 darkColor = vec3(0.02, 0.01, 0.0); 
+          float exposure = smoothstep(0.05, 0.3, incomingLight * diff);
+          vec3 runeColor = mix(fireColor, darkColor, exposure);
+          final = mix(final, runeColor, runeGlow);
+      }
+
+      // ==========================================
+      // YENİ: PALANTİR (KARANLIKTA NEFES ALAN BÜYÜ IŞIĞI)
+      // ==========================================
+      if (uIsPalantir == 1) {
+          // Sürekli parlayıp sönen (nefes alan) bir ritim (Pulse)
+          float pulse = (sin(uTime * 2.5) * 0.5 + 0.5) * 0.4 + 0.8;
+          
+          // Orijinal doku rengini (baseColor) alıp pulse ile şiddetlendiriyoruz
+          vec3 evilGlow = baseColor.rgb * pulse * 1.5; 
+          
+          // Dışarıdan vuran asanın ışığı (final) ile Palantir'in kendi ışığını kıyasla,
+          // hangisi daha parlaksa ekrana onu bas! (Böylece karanlıkta asla sönmez)
+          final = max(final, evilGlow);
+      }
+
+      if (uSpellMode == 1) { 
+          float rim = 1.0 - max(dot(viewDir, normal), 0.0);
+          float energy = (sin(fPosition.y * 6.0 + uTime * 4.0) + cos(fPosition.x * 5.0 - uTime * 3.0)) * 0.25 + 0.5;
+          vec3 auraColor = mix(vec3(0.4, 0.05, 0.8), vec3(0.2, 0.7, 1.0), energy);
+          final += auraColor * smoothstep(0.4, 1.0, rim) * 2.0;
+      } 
+      else if (uSpellMode == 2) {
+          final = mix(final, vec3(0.05, 0.05, 0.08), smoothstep(6.0, 18.0, length(cameraPosition - fPosition)));
+      }
+
+      gl_FragColor = vec4(min(final, vec3(1.0)), baseColor.a);
+    }
+  </script>
+</head>
+
+<body>
+  <div id="app"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+
+</html>
